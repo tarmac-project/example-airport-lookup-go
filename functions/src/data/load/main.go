@@ -52,11 +52,11 @@ func escapeSQL(v string) string {
 }
 
 // Handler downloads airport data, parses records, and upserts them into SQL.
-func (f *Function) Handler(_ []byte) ([]byte, error) {
+func (f *Function) Handler(payload []byte) ([]byte, error) {
 	f.logging.Info("Airport raw data download starting")
 
 	// Fetch the airport data
-	data, err := f.function.Call("fetch", []byte(""))
+	data, err := f.function.Call("fetch", payload)
 	if err != nil {
 		f.logging.Error(fmt.Sprintf("failed to fetch airport data: %v", err))
 		return []byte(""), fmt.Errorf("failed to fetch airport data: %w", err)

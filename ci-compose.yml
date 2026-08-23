@@ -1,0 +1,59 @@
+name: airport-ci
+
+services:
+  tarmac:
+    image: madflojo/tarmac:unstable
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENABLE_TLS: "false"
+      APP_LISTEN_ADDR: "0.0.0.0:8080"
+      APP_DEBUG: "false"
+      APP_TRACE: "false"
+      APP_WASM_FUNCTION_CONFIG: /config/tarmac-ci.json
+      APP_ENABLE_SQL: "true"
+      APP_SQL_TYPE: mysql
+      APP_SQL_DSN: root:example@tcp(mysql:3306)/example
+      APP_ENABLE_KVSTORE: "true"
+      APP_KVSTORE_TYPE: redis
+      APP_REDIS_SERVER: redis:6379
+      APP_HTTP_CLIENT_MAX_RESPONSE_BODY_SIZE: "10485760"
+    volumes:
+      - ./config:/config:ro
+      - ./functions/build:/functions:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      fixture-server:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: example
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pexample"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  fixture-server:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    volumes:
+      - ./tests/fixtures:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/airports.csv"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

@@ -1,11 +1,13 @@
 .PHONY: tests build benchmarks format lint clean
 
 ROOT ?= $(abspath ../../../..)
+COVERAGE_DIR ?= $(ROOT)/coverage
 TINYGO_IMAGE ?= tinygo/tinygo:0.38.0
 TINYGO_FLAGS ?= -scheduler=none --no-debug -target=wasip1 -buildmode=c-shared
 
 tests:
-	go test -v -race ./...
+	mkdir -p $(COVERAGE_DIR)
+	go test -v -race -covermode=atomic -coverprofile=$(COVERAGE_DIR)/lookup.out ./...
 
 build:
 	mkdir -p $(ROOT)/functions/build/handlers

@@ -1,0 +1,78 @@
+name: functional
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: '17 8 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  functional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: |
+            go.sum
+            functions/src/**/go.sum
+      - name: Build WASM functions
+        run: make build
+      - name: Start functional stack
+        run: docker compose -f ci-compose.yml up -d --wait
+      - name: Verify seed and ingestion paths
+        env:
+          AIRPORT_FUNCTIONAL: '1'
+        run: go test -v ./tests/functional
+      - name: Run PR k6 profile
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/k6
+          docker run --rm \
+            --network airport-ci_default \
+            -v "${PWD}:/work" \
+            -w /work \
+            -e BASE_URL=http://tarmac:8080 \
+            grafana/k6:0.54.0@sha256:1f40432b1cbe7234e977f96c362c9bc550a2d2b583d014dd8669fe40d3e9e755 \
+            run --config tests/k6/ci.json \
+            --summary-export=artifacts/k6/summary.json \
+            tests/k6/script.js 2>&1 | tee artifacts/k6/output.log
+      - name: Run weekly stress gate
+        if: github.event_name == 'schedule'
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/k6
+          docker run --rm \
+            --network airport-ci_default \
+            -v "${PWD}:/work" \
+            -w /work \
+            -e BASE_URL=http://tarmac:8080 \
+            grafana/k6:0.54.0@sha256:1f40432b1cbe7234e977f96c362c9bc550a2d2b583d014dd8669fe40d3e9e755 \
+            run --config tests/k6/stress.json \
+            --summary-export=artifacts/k6/summary.json \
+            tests/k6/script.js 2>&1 | tee artifacts/k6/output.log
+      - name: Capture Compose logs
+        if: always()
+        run: |
+          mkdir -p artifacts
+          docker compose -f ci-compose.yml logs --no-color > artifacts/compose.log
+      - name: Upload functional artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+      - name: Stop functional stack
+        if: always()
+        run: docker compose -f ci-compose.yml down -v --remove-orphans

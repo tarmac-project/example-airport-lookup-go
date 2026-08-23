@@ -7,6 +7,8 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/url"
+	"strings"
 
 	sdk "github.com/tarmac-project/sdk"
 	"github.com/tarmac-project/sdk/httpclient"
@@ -23,10 +25,15 @@ type Function struct {
 }
 
 // Handler downloads airport CSV data and returns the raw content.
-func (f *Function) Handler(_ []byte) ([]byte, error) {
+func (f *Function) Handler(payload []byte) ([]byte, error) {
+	csvURL, err := resolveAirportsCSVURL(payload)
+	if err != nil {
+		return nil, err
+	}
+
 	f.logging.Info("downloading airports.csv")
 
-	rsp, err := f.fetchAirportCSV()
+	rsp, err := f.fetchAirportCSV(csvURL)
 	if err != nil {
 		return nil, err
 	}
@@ -34,11 +41,29 @@ func (f *Function) Handler(_ []byte) ([]byte, error) {
 	return rsp, nil
 }
 
-func (f *Function) fetchAirportCSV() ([]byte, error) {
-	rsp, err := f.http.Get(airportsCSVURL)
+func resolveAirportsCSVURL(payload []byte) (string, error) {
+	rawURL := strings.TrimSpace(string(payload))
+	if rawURL == "" {
+		return airportsCSVURL, nil
+	}
+
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("airport CSV URL must be an absolute HTTP or HTTPS URL")
+	}
+
+	return parsed.String(), nil
+}
+
+func (f *Function) fetchAirportCSV(csvURL string) ([]byte, error) {
+	rsp, err := f.http.Get(csvURL)
 	if err != nil {
 		f.logging.Error(fmt.Sprintf("failed to get airports.csv: %v", err))
 		return nil, fmt.Errorf("failed to get airports.csv: %w", err)
+	}
+	if rsp == nil {
+		f.logging.Error("airports.csv download returned empty response")
+		return nil, fmt.Errorf("failed to get airports.csv: empty response")
 	}
 	if rsp.Body != nil {
 		defer func() {

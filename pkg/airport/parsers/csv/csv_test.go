@@ -3,6 +3,7 @@ package csv
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/enescakir/emoji"
@@ -370,4 +371,34 @@ func TestParseAirport(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseReturnsCSVReadError(t *testing.T) {
+	p, err := New(strings.NewReader("\"unterminated"))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+
+	if _, err := p.Parse(); err == nil {
+		t.Fatal("Parse() error = nil, want malformed CSV error")
+	}
+}
+
+func FuzzParserParse(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("id,ident,type,name,latitude_deg,longitude_deg,elevation_ft,continent,iso_country,iso_region,municipality,scheduled_service,gps_code,iata_code,local_code,home_link,wikipedia_link,keywords\n"))
+	f.Add([]byte("1,CIX1,small_airport,CI Fixture Airport,0,0,0,NA,US,US-AZ,Phoenix,no,KCIX,,CIX1,,,\n"))
+	f.Add([]byte("\"unterminated"))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			t.Skip()
+		}
+
+		p, err := New(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("New() unexpected error: %v", err)
+		}
+		_, _ = p.Parse()
+	})
 }

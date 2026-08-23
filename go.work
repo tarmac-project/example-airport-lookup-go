@@ -1,0 +1,10 @@
+go 1.23
+
+use (
+	.
+	./functions/src/data/fetch
+	./functions/src/data/init
+	./functions/src/data/load
+	./functions/src/data/seed
+	./functions/src/handlers/lookup
+)

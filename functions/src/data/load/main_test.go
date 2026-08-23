@@ -1,11 +1,50 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	airportpkg "github.com/tarmac-project/example-airport-lookup-go/pkg/airport"
+	"github.com/tarmac-project/sdk/sql"
 )
+
+type fakeFunctionClient struct {
+	name  string
+	input []byte
+	rsp   []byte
+	err   error
+}
+
+func (f *fakeFunctionClient) Call(name string, input []byte) ([]byte, error) {
+	f.name = name
+	f.input = append([]byte(nil), input...)
+	return f.rsp, f.err
+}
+
+type fakeSQLClient struct {
+	calls  int
+	failAt int
+}
+
+func (f *fakeSQLClient) Exec(string) (sql.ExecResult, error) {
+	f.calls++
+	if f.calls == f.failAt {
+		return sql.ExecResult{}, errors.New("upsert failed")
+	}
+	return sql.ExecResult{RowsAffected: 1}, nil
+}
+
+func (*fakeSQLClient) Query(string) (sql.QueryResult, error) { return sql.QueryResult{}, nil }
+func (*fakeSQLClient) Close() error                          { return nil }
+
+type fakeLogger struct{}
+
+func (*fakeLogger) Info(string)  {}
+func (*fakeLogger) Warn(string)  {}
+func (*fakeLogger) Error(string) {}
+func (*fakeLogger) Debug(string) {}
+func (*fakeLogger) Trace(string) {}
 
 func TestEscapeSQL(t *testing.T) {
 	input := "O'Hare \"line\"\nnext"
@@ -67,5 +106,65 @@ func TestMarshalLoadSummary(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("expected summary to contain %q, got %q", expected, got)
 		}
+	}
+}
+
+func TestHandlerForwardsFetchInput(t *testing.T) {
+	csvData := []byte("1,CIX1,small_airport,CI Fixture Airport,0,0,0,NA,US,US-AZ,Phoenix,no,KCIX,,CIX1,,,")
+	functionClient := &fakeFunctionClient{rsp: csvData}
+	sqlClient := &fakeSQLClient{}
+	function := &Function{
+		logging:  &fakeLogger{},
+		function: functionClient,
+		sql:      sqlClient,
+	}
+	input := []byte("http://fixture-server/airports.csv")
+
+	summary, err := function.Handler(input)
+	if err != nil {
+		t.Fatalf("Handler() unexpected error: %v", err)
+	}
+	if functionClient.name != "fetch" {
+		t.Fatalf("called function %q, want fetch", functionClient.name)
+	}
+	if string(functionClient.input) != string(input) {
+		t.Fatalf("forwarded input %q, want %q", functionClient.input, input)
+	}
+	if !strings.Contains(string(summary), "\"successful_upsert\":1") {
+		t.Fatalf("summary = %s, want one successful upsert", summary)
+	}
+}
+
+func TestHandlerFailures(t *testing.T) {
+	validCSV := []byte("1,CIX1,small_airport,CI Fixture Airport,0,0,0,NA,US,US-AZ,Phoenix,no,KCIX,,CIX1,,,\n2,CIX2,small_airport,Second Fixture,0,0,0,NA,US,US-AZ,Tempe,no,KCIX2,,CIX2,,,")
+	tests := []struct {
+		name        string
+		fetchRsp    []byte
+		fetchErr    error
+		failAt      int
+		wantErrSub  string
+		wantSummary string
+	}{
+		{name: "fetch error", fetchErr: errors.New("fetch failed"), wantErrSub: "failed to fetch airport data"},
+		{name: "malformed CSV", fetchRsp: []byte("\"unterminated"), wantErrSub: "failed to parse airport data"},
+		{name: "partial upsert failure", fetchRsp: validCSV, failAt: 2, wantErrSub: "1 failed upserts", wantSummary: "\"failed_upsert\":1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			function := &Function{
+				logging:  &fakeLogger{},
+				function: &fakeFunctionClient{rsp: tc.fetchRsp, err: tc.fetchErr},
+				sql:      &fakeSQLClient{failAt: tc.failAt},
+			}
+
+			summary, err := function.Handler(nil)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("Handler() error = %v, want substring %q", err, tc.wantErrSub)
+			}
+			if tc.wantSummary != "" && !strings.Contains(string(summary), tc.wantSummary) {
+				t.Fatalf("summary = %s, want substring %q", summary, tc.wantSummary)
+			}
+		})
 	}
 }

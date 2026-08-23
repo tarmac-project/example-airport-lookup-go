@@ -1,5 +1,6 @@
 COMPONENTS = functions/src/data/fetch functions/src/data/init functions/src/data/load functions/src/data/seed functions/src/handlers/lookup
 ROOT = $(CURDIR)
+COVERAGE_DIR ?= $(ROOT)/coverage
 TINYGO_IMAGE ?= tinygo/tinygo:0.38.0
 TINYGO_FLAGS ?= -scheduler=none --no-debug -target=wasip1 -buildmode=c-shared
 
@@ -15,11 +16,10 @@ build:
 
 tests:
 	@echo "Running tests for all modules..."
-	mkdir -p coverage
-	go test -v -race -covermode=atomic -coverprofile=coverage/coverage.out ./...
-	go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+	mkdir -p $(COVERAGE_DIR)
+	go test -v -race -covermode=atomic -coverprofile=$(COVERAGE_DIR)/root.out ./...
 	@for dir in $(COMPONENTS); do \
-		$(MAKE) -C $$dir tests || exit 1; \
+		$(MAKE) -C $$dir tests COVERAGE_DIR="$(COVERAGE_DIR)" || exit 1; \
 	done
 
 benchmarks:
@@ -44,6 +44,7 @@ format:
 lint:
 	@echo "Linting code..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
+		set -e; \
 		golangci-lint run ./...; \
 		for dir in $(COMPONENTS); do \
 			$(MAKE) -C $$dir lint || exit 1; \

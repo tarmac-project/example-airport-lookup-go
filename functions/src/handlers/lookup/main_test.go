@@ -5,7 +5,53 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	sdk "github.com/tarmac-project/sdk"
+	"github.com/tarmac-project/sdk/kv"
+	"github.com/tarmac-project/sdk/sql"
 )
+
+type fakeKVClient struct {
+	getValue []byte
+	getErr   error
+	setKey   string
+	setValue []byte
+	setErr   error
+}
+
+func (*fakeKVClient) Config() sdk.RuntimeConfig { return sdk.RuntimeConfig{} }
+func (f *fakeKVClient) Get(string) ([]byte, error) {
+	return f.getValue, f.getErr
+}
+func (f *fakeKVClient) Set(key string, value []byte) error {
+	f.setKey = key
+	f.setValue = append([]byte(nil), value...)
+	return f.setErr
+}
+func (*fakeKVClient) Delete(string) error     { return nil }
+func (*fakeKVClient) Keys() ([]string, error) { return nil, nil }
+func (*fakeKVClient) Close() error            { return nil }
+
+type fakeSQLClient struct {
+	queryResult sql.QueryResult
+	queryErr    error
+	query       string
+}
+
+func (*fakeSQLClient) Exec(string) (sql.ExecResult, error) { return sql.ExecResult{}, nil }
+func (f *fakeSQLClient) Query(query string) (sql.QueryResult, error) {
+	f.query = query
+	return f.queryResult, f.queryErr
+}
+func (*fakeSQLClient) Close() error { return nil }
+
+type fakeLogger struct{}
+
+func (*fakeLogger) Info(string)  {}
+func (*fakeLogger) Warn(string)  {}
+func (*fakeLogger) Error(string) {}
+func (*fakeLogger) Debug(string) {}
+func (*fakeLogger) Trace(string) {}
 
 type DecodeDataTestCase struct {
 	name     string
@@ -218,5 +264,60 @@ func TestTrimStagePrefix(t *testing.T) {
 	err = trimStagePrefix(errors.New("decode: invalid payload"))
 	if err.Error() != "invalid payload" {
 		t.Fatalf("expected trimmed error, got %q", err.Error())
+	}
+}
+
+func TestHandlerDataPaths(t *testing.T) {
+	airportJSON := "{\"local_code\":\"PHX\",\"name\":\"Phoenix Sky Harbor International Airport\"}"
+	queryData := []byte("[{\"local_code\":\"UEhY\",\"name\":\"UGhvZW5peCBTa3kgSGFyYm9yIEludGVybmF0aW9uYWwgQWlycG9ydA==\",\"country\":\"VVM=\",\"emoji\":\"8J+HuvCfh7g=\",\"type\":\"bGFyZ2VfYWlycG9ydA==\",\"type_emoji\":\"8J+bug==\",\"status\":\"b3Blbg==\"}]")
+
+	tests := []struct {
+		name       string
+		payload    string
+		cacheValue []byte
+		cacheErr   error
+		queryData  []byte
+		queryErr   error
+		setErr     error
+		wantSource string
+		wantStage  string
+		wantSet    bool
+	}{
+		{name: "cache hit", payload: "{\"local_code\":\"PHX\"}", cacheValue: []byte(airportJSON), wantSource: "cache"},
+		{name: "SQL fallback", payload: "{\"local_code\":\"PHX\"}", cacheErr: kv.ErrKeyNotFound, queryData: queryData, wantSource: "sql", wantSet: true},
+		{name: "cache write is best effort", payload: "{\"local_code\":\"PHX\"}", cacheErr: kv.ErrKeyNotFound, queryData: queryData, setErr: errors.New("cache unavailable"), wantSource: "sql", wantSet: true},
+		{name: "unknown airport", payload: "{\"local_code\":\"ZZZZ\"}", cacheErr: kv.ErrKeyNotFound, wantStage: "sql_query"},
+		{name: "SQL error", payload: "{\"local_code\":\"PHX\"}", cacheErr: kv.ErrKeyNotFound, queryErr: errors.New("database unavailable"), wantStage: "sql_query"},
+		{name: "invalid code", payload: "{\"local_code\":\"A-1\"}", wantStage: "validation"},
+		{name: "malformed input", payload: "{", wantStage: "validation"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kvClient := &fakeKVClient{getValue: tc.cacheValue, getErr: tc.cacheErr, setErr: tc.setErr}
+			sqlClient := &fakeSQLClient{queryResult: sql.QueryResult{Data: tc.queryData}, queryErr: tc.queryErr}
+			function := &Function{logging: &fakeLogger{}, kv: kvClient, sql: sqlClient}
+
+			result, err := function.Handler([]byte(tc.payload))
+			if err != nil {
+				t.Fatalf("Handler() unexpected error: %v", err)
+			}
+			var response map[string]any
+			if err := json.Unmarshal(result, &response); err != nil {
+				t.Fatalf("Handler() returned invalid JSON %q: %v", result, err)
+			}
+			if tc.wantSource != "" && response["source"] != tc.wantSource {
+				t.Fatalf("source = %v, want %q", response["source"], tc.wantSource)
+			}
+			if tc.wantStage != "" && response["stage"] != tc.wantStage {
+				t.Fatalf("stage = %v, want %q", response["stage"], tc.wantStage)
+			}
+			if tc.wantSet != (kvClient.setKey != "") {
+				t.Fatalf("cache Set called = %v, want %v", kvClient.setKey != "", tc.wantSet)
+			}
+			if tc.wantSet && !strings.Contains(sqlClient.query, "PHX") {
+				t.Fatalf("SQL query = %q, want PHX predicate", sqlClient.query)
+			}
+		})
 	}
 }
